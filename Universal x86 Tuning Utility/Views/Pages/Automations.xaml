@@ -156,6 +156,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Margin="0,0,18,0" VerticalAlignment="Center">
                         <TextBlock FontSize="14" FontWeight="Medium" Text="AutoOC: Adaptive CPU Undervolt" />
+                        <TextBlock x:Name="txtCpuAutoOcStatus" FontSize="12" Margin="0,4,0,4" TextWrapping="Wrap" Visibility="Collapsed" />
                         <TextBlock FontSize="12"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                    Text="Dynamically optimises CPU voltage with built-in stability protection. Initial tuning may temporarily cause instability or crashes."

@@ -36,11 +36,21 @@ public static class AutoOcDiagnostics
             if (Interlocked.Exchange(ref initialized, 1) != 0) return;
             string path = Path.Combine(directory ?? Path.Combine(AppContext.BaseDirectory, "logs"), "autooc-diagnostics.jsonl");
             writer = Task.Run(() => WriteLoop(path));
+            bool cpuPolicyRequested = AutoOcCpuPolicy.Requested;
+            bool cpuPolicyLibraryMatches = AutoOcCpuPolicy.LibraryMatches;
             Enqueue("session_start", new()
             {
                 ["appVersion"] = typeof(AutoOcDiagnostics).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
                 ["hardwareReadbackVerified"] = false,
-                ["description"] = "Observational trace; thresholds and learned state are unchanged."
+                ["cpuPolicyRequested"] = cpuPolicyRequested,
+                ["cpuPolicyLibraryMatches"] = cpuPolicyLibraryMatches,
+                ["tuningRulesChanged"] = cpuPolicyRequested && cpuPolicyLibraryMatches,
+                ["hardwareReadbackRecordKind"] = cpuPolicyRequested && cpuPolicyLibraryMatches ? "cpu_policy" : null,
+                ["description"] = !cpuPolicyRequested
+                    ? "Observational trace; thresholds and learned state are unchanged."
+                    : cpuPolicyLibraryMatches
+                        ? "CPU policy v1 uses an observational workload heuristic, isolated CPU learned state, and bounded host tuning. Actual readback outcomes are recorded separately in cpu_policy records."
+                        : "CPU policy v1 was requested but the matching library is missing; CPU tuning must remain paused. This session record establishes no hardware readback."
             });
         }
         catch { /* Diagnostics must not stop or change tuning. */ }
@@ -61,6 +71,12 @@ public static class AutoOcDiagnostics
 
     // Injected at entry of the existing signal method, before its original IL.
     public static void OnSignal(object monitor, string channel)
+        => CaptureSignal(monitor, channel, "instability_signal", true);
+
+    public static void OnWorkloadSignal(object monitor)
+        => CaptureSignal(monitor, "cpu", "workload_observation", false);
+
+    private static void CaptureSignal(object monitor, string channel, string kind, bool signalsInstability)
     {
         var context = pendingContext;
         pendingContext = null;
@@ -68,9 +84,10 @@ public static class AutoOcDiagnostics
         {
             bool matched = context != null && ReferenceEquals(context.Monitor, monitor);
             string source = matched ? context!.Source : FindCaller();
-            Enqueue("instability_signal", new()
+            Enqueue(kind, new()
             {
                 ["channel"] = channel,
+                ["signalsInstability"] = signalsInstability,
                 ["source"] = source,
                 ["reason"] = Reason(source),
                 ["event"] = matched ? context!.Details : null,
@@ -79,6 +96,12 @@ public static class AutoOcDiagnostics
                 ["snapshotNote"] = "Observed fields are not a cross-thread atomic snapshot; no stability verdict or hardware readback is inferred."
             });
         }
+        catch { }
+    }
+
+    public static void RecordCpuPolicy(string stage, object? details = null)
+    {
+        try { Enqueue("cpu_policy", new() { ["stage"] = stage, ["details"] = details }); }
         catch { }
     }
 

@@ -144,6 +144,9 @@ foreach (var (usage, threshold) in new[] { (10f, 12), (60f, 12), (84.9f, 12), (8
 RealDiagnostics.Shutdown();
 var records = File.ReadAllLines(Path.Combine(logDirectory, "autooc-diagnostics.jsonl"))
     .Select(line => JsonDocument.Parse(line)).ToArray();
+var session = records.Single(x => x.RootElement.GetProperty("kind").GetString() == "session_start").RootElement;
+Check(!session.GetProperty("cpuPolicyRequested").GetBoolean() && !session.GetProperty("cpuPolicyLibraryMatches").GetBoolean()
+    && !session.GetProperty("tuningRulesChanged").GetBoolean(), "Observational test session was labeled as CPU policy mode.");
 var smu = records.Where(x => x.RootElement.GetProperty("kind").GetString() == "smu_command_result").Select(x => x.RootElement).ToArray();
 Check(smu.Length > 0 && smu.All(x => !x.GetProperty("hardwareReadbackVerified").GetBoolean()), "Serializer overclaims readback.");
 Check(smu.Any(x => x.GetProperty("acceptedByFirmware").GetBoolean() && x.GetProperty("statusCode").GetUInt32() == 1), "Serializer lost acceptance.");
@@ -207,4 +210,11 @@ namespace RyzenSmu
 namespace Universal_x86_Tuning_Utility.Scripts.Misc
 {
     public static class DiagnosticLogger { public static void LogDebug(string message) { } }
+    // This isolated harness has neither a policy DLL nor a portable marker file.
+    // The production policy type remains unchanged and is not source-linked here.
+    public static class AutoOcCpuPolicy
+    {
+        public static bool Requested => false;
+        public static bool LibraryMatches => false;
+    }
 }

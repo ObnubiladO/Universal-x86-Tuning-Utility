@@ -64,6 +64,7 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
             ViewModel = viewModel;
             DataContext = this;
             InitializeComponent();
+            App.RestoreAutoOcBeforeExit = RestoreVerifiedAutoOcOnExit;
 
             _navigationService = navigationService;
             _mainWindowNav = RootNavigation;
@@ -189,6 +190,7 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
         int lastCPUUVOffset = 0;
         int lastiGPUUVOffset = 0;
         private int miscTickRunning;
+        private AutoOcCpuSession? verifiedCpuSession;
 
         private async void Misc_Tick(object sender, EventArgs e)
         {
@@ -243,6 +245,12 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
         {
             try
             {
+                if (AutoOcCpuPolicy.Requested)
+                {
+                    verifiedCpuSession ??= new AutoOcCpuSession();
+                    await verifiedCpuSession.TickAsync(Settings.Default.isAutoUvCPU);
+                    return;
+                }
                 if (!Settings.Default.isAutoUvCPU)
                 {
                     await DisableCpuUndervoltAsync();
@@ -284,6 +292,12 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
             {
                 DiagnosticLogger.LogError(ex, "Failed CPU undervolt");
             }
+        }
+
+        internal void RestoreVerifiedAutoOcOnExit()
+        {
+            Misc.Stop();
+            verifiedCpuSession?.StopAsync().GetAwaiter().GetResult();
         }
 
         private async Task ProcessIgpuUndervoltAsync()

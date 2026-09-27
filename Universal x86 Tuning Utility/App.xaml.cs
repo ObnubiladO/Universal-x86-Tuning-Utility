@@ -63,6 +63,7 @@ namespace Universal_x86_Tuning_Utility
         }
 
         public static string version = "26.3.1";
+        internal static Action? RestoreAutoOcBeforeExit;
         private Mutex mutex;
         private const string MutexName = "UniversalX86TuningUtility";
 
@@ -353,6 +354,14 @@ namespace Universal_x86_Tuning_Utility
 
         protected override void OnExit(ExitEventArgs e)
         {
+            try
+            {
+                RestoreAutoOcBeforeExit?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Universal_x86_Tuning_Utility.Scripts.Misc.AutoOcDiagnostics.RecordCpuPolicy("exit_restore_failed", new { error = ex.ToString() });
+            }
             Universal_x86_Tuning_Utility.Scripts.Misc.AutoOcDiagnostics.Shutdown();
             _showListenerCts?.Cancel();
             _showEvent?.Dispose();

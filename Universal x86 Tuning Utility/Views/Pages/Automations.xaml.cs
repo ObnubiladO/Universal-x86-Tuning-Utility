@@ -30,6 +30,14 @@ namespace Universal_x86_Tuning_Utility.Views.Pages
         public Automations()
         {
             InitializeComponent();
+            Loaded += (_, _) =>
+            {
+                if (!AutoOcCpuPolicy.Requested) return;
+                txtCpuAutoOcStatus.Visibility = Visibility.Visible;
+                UpdateCpuAutoOcStatus(AutoOcCpuPolicy.Status);
+                AutoOcCpuPolicy.StatusChanged += UpdateCpuAutoOcStatus;
+            };
+            Unloaded += (_, _) => AutoOcCpuPolicy.StatusChanged -= UpdateCpuAutoOcStatus;
             _ = Tablet.TabletDevices;
             PremadePresets.SetPremadePresets();
             if (Family.TYPE == Family.ProcessorType.Amd_Apu)
@@ -126,6 +134,12 @@ namespace Universal_x86_Tuning_Utility.Views.Pages
             getResumePreset(Settings.Default.resumePreset);
 
             setup = true;
+        }
+
+        private void UpdateCpuAutoOcStatus(string status)
+        {
+            if (Dispatcher.CheckAccess()) txtCpuAutoOcStatus.Text = status;
+            else Dispatcher.BeginInvoke(new Action(() => txtCpuAutoOcStatus.Text = status));
         }
 
         private void getAcPreset(string searchName)
