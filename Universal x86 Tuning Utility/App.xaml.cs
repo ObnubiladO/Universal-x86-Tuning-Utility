@@ -353,6 +353,7 @@ namespace Universal_x86_Tuning_Utility
 
         protected override void OnExit(ExitEventArgs e)
         {
+            Universal_x86_Tuning_Utility.Scripts.Misc.AutoOcDiagnostics.Shutdown();
             _showListenerCts?.Cancel();
             _showEvent?.Dispose();
             mutex?.Dispose();

@@ -68,6 +68,7 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
             _navigationService = navigationService;
             _mainWindowNav = RootNavigation;
 
+            AutoOcDiagnostics.Initialize();
             Misc.Interval = TimeSpan.FromSeconds(1);
             Misc.Tick += Misc_Tick;
             Misc.Start();
@@ -263,17 +264,21 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
                     idleExitMarginPercent: 2f
                 );
 
+                AutoOcDiagnostics.AttachController(cpuController, false);
                 int requestedOffset = cpuController.UpdateOffset();
 
                 if (lastCPUUVOffset != requestedOffset)
                 {
                     string commandValues = BuildCpuOffsetCommand(requestedOffset);
+                    AutoOcDiagnostics.RecordCommand(false, requestedOffset, "dispatch_requested");
                     await RyzenAdj_To_UXTU.TranslateAsync(commandValues, false, true);
+                    AutoOcDiagnostics.RecordCommand(false, requestedOffset, "dispatch_returned_without_hardware_readback");
                     lastCPUUVOffset = requestedOffset;
                 }
 
                 if (cpuController.GetLastAppliedOffset() != requestedOffset)
                     cpuController.RecordAppliedOffset(requestedOffset);
+                AutoOcDiagnostics.ObserveController(cpuController, false, monitor);
             }
             catch (Exception ex)
             {
@@ -303,17 +308,21 @@ namespace Universal_x86_Tuning_Utility.Views.Windows
                     minimumEvaluationIntervalMilliseconds: 1000
                 );
 
+                AutoOcDiagnostics.AttachController(iGpuController, true);
                 int requestedOffset = iGpuController.UpdateOffset();
 
                 if (lastiGPUUVOffset != requestedOffset)
                 {
                     string commandValues = BuildIgpuOffsetCommand(requestedOffset);
+                    AutoOcDiagnostics.RecordCommand(true, requestedOffset, "dispatch_requested");
                     await RyzenAdj_To_UXTU.TranslateAsync(commandValues, false, true);
+                    AutoOcDiagnostics.RecordCommand(true, requestedOffset, "dispatch_returned_without_hardware_readback");
                     lastiGPUUVOffset = requestedOffset;
                 }
 
                 if (iGpuController.GetLastAppliedOffset() != requestedOffset)
                     iGpuController.RecordAppliedOffset(requestedOffset);
+                AutoOcDiagnostics.ObserveController(iGpuController, true, monitor);
             }
             catch (Exception ex)
             {
