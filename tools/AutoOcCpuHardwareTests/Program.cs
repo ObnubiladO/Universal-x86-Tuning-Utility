@@ -19,7 +19,7 @@ Check(unsupportedBackend.Events.Count == 0, "unsupported operations never access
 
 var boundsBackend = new FakeBackend();
 var bounds = Service(boundsBackend);
-Check(!(await bounds.ApplyAsync(-6)).Success && !(await bounds.ApplyAsync(1)).Success, "allowed offset range");
+Check(!(await bounds.ApplyAsync(-51)).Success && !(await bounds.ApplyAsync(1)).Success, "allowed offset range");
 Check(boundsBackend.Events.Count == 0, "out-of-range operations never access backend");
 
 var successBackend = new FakeBackend();
@@ -30,6 +30,15 @@ Check(success.Readback.Cores.Select(core => core.Selector).Distinct().Count() ==
     success.Readback.Cores[8].Selector == 0x10000000 && success.Readback.Cores[15].Selector == 0x10700000,
     "all sixteen distinct physical cores are queried");
 Check(successBackend.Events.Count(e => e.StartsWith("set:")) == 1, "success does not restore away requested offset");
+
+foreach (int requested in new[] { -6, -50 })
+{
+    var backend = new FakeBackend();
+    var applied = await Service(backend).ApplyAsync(requested);
+    Check(applied.Success && applied.Readback!.Matches(requested), requested + " within original search range is accepted with signed readback");
+    Check(backend.Events.First() == "set:" + requested && !backend.Events.Contains("set:0"), requested + " successful application remains applied");
+}
+Check(AutoOcCpuLimits.MinimumOffset == -50, "hardware tests use the production original search bound");
 
 foreach (string scenario in new[] { "set_false", "set_throws", "read_failed", "read_throws", "read_mismatch", "malformed", "implausible" })
 {

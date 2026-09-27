@@ -86,8 +86,8 @@ internal sealed class AutoOcCpuHardware
     private AutoOcCpuApplyResult Apply(int offset)
     {
         if (!Support.Supported) return UnsupportedApply(offset);
-        if (offset < -5 || offset > 0)
-            return new(offset, false, false, null, "Only offsets from -5 through 0 are allowed by this patch.", null);
+        if (offset < AutoOcCpuLimits.MinimumOffset || offset > 0)
+            return new(offset, false, false, null, $"Only offsets from {AutoOcCpuLimits.MinimumOffset} through 0 are allowed by this patch.", null);
 
         bool accepted = false;
         AutoOcCpuReadback? readback = null;
@@ -216,7 +216,7 @@ internal sealed class AutoOcCpuHardware
         public bool SetAllCoreOffset(int offset)
         {
             ValidateProtocol();
-            if (offset < -5 || offset > 0) throw new ArgumentOutOfRangeException(nameof(offset));
+            if (offset < AutoOcCpuLimits.MinimumOffset || offset > 0) throw new ArgumentOutOfRangeException(nameof(offset));
             uint encoded = offset < 0 ? unchecked((uint)(0x100000 + offset)) : 0u;
             return SMUCommands.applySettings("set-coall", encoded);
         }

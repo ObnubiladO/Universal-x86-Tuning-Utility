@@ -98,8 +98,8 @@ internal sealed class AutoOcCpuSession
             }
             AutoOcDiagnostics.ObserveController(controller, false, monitor);
             AutoOcCpuPolicy.SetStatus(verifiedOffset == 0
-                ? "CPU offset 0 verified. AutoOC waits during idle and checks active workloads before tuning. Limit −5."
-                : $"CPU offset {verifiedOffset} verified on all 16 cores. AutoOC active; limit −5.");
+                ? $"CPU offset 0 verified. AutoOC waits during idle and evaluates active workloads. Search bound {AutoOcCpuPolicy.MinimumOffset}."
+                : $"CPU offset {verifiedOffset} verified on all 16 cores. AutoOC learning; search bound {AutoOcCpuPolicy.MinimumOffset}.");
         }
         catch (Exception ex)
         {

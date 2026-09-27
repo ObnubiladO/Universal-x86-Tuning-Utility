@@ -65,9 +65,21 @@ Before taking control, the host reads all 16 core offsets and requires every
 one to be zero. Pre-existing nonzero offsets are left unchanged. It then
 starts a fresh evaluation epoch while retaining the policy state's learned
 limits and unclean-exit recovery protections. Tuning is limited to offsets
-from **0 through −5**, in steps of one, after **60 stable active evaluations**
+from **0 through −50** (the original UXTU CPU search range), in steps of one,
+after **60 qualifying active evaluations**
 per step. Evaluations are at least one second apart; idle periods, cooldowns
 and holds can make this take longer. Existing idle handling remains active.
+
+The earlier -5 trial limit has been removed. A shared `AutoOcCpuLimits`
+constant supplies both hardware guards and the controller bound. The existing
+`uv_state_cpu_verified_v1.json` is retained: its recorded `MinOffset` does not
+override the constructor's current range, while learned failure floors and
+crash history still load. The controller backs off after a detected failure
+and respects the learned limit for the workload band. It does not jump directly
+to -50, measure performance per watt, or declare a globally proven optimum.
+Absence of a detected failure during a sampling interval is not a complete
+stability test. Crash recovery uses the last verified offset; a crash during
+the first pending application has not yet recorded that candidate as applied.
 
 After every offset change, the host requires setter acknowledgement and
 getter readback matching the request on **all 16 cores**. It repeats the

@@ -9,7 +9,7 @@ namespace Universal_x86_Tuning_Utility.Scripts.Misc;
 
 public static class AutoOcCpuPolicy
 {
-    public const int MinimumOffset = -5;
+    public const int MinimumOffset = AutoOcCpuLimits.MinimumOffset;
     public const int EvaluationSamples = 60;
     public static bool LibraryMatches => typeof(InstabilityMonitor).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()

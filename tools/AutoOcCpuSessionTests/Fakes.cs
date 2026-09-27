@@ -23,6 +23,7 @@ namespace AutoOC.Controllers
         public static readonly List<AdaptiveUndervoltController> Instances = new();
         public static int InitialRequest;
         public int Request;
+        public int MinimumOffset;
         public bool PersistenceAvailable = true;
         public readonly List<int> Recorded = new();
         public int Updates;
@@ -32,6 +33,7 @@ namespace AutoOC.Controllers
             int idleEntrySamples, int idleExitSamples, float idleExitMarginPercent)
         {
             Request = InitialRequest;
+            MinimumOffset = minimumOffset;
             Instances.Add(this);
         }
         public bool IsPersistenceAvailable() => PersistenceAvailable;
@@ -77,7 +79,7 @@ namespace Universal_x86_Tuning_Utility.Scripts.Misc
     internal static class AutoOcCpuPolicy
     {
         public static bool LibraryMatches = true;
-        public const int MinimumOffset = -5, EvaluationSamples = 60;
+        public const int MinimumOffset = AutoOcCpuLimits.MinimumOffset, EvaluationSamples = 60;
         public static readonly List<string> Status = new();
         public static int Epochs;
         public static int UncleanRecoveryPreserved;

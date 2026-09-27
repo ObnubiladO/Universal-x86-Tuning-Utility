@@ -70,11 +70,24 @@ foreach (string gate in new[] { "library", "support", "whea", "watcher_error", "
     await session.TickAsync(true);
     var controller = AdaptiveUndervoltController.Instances.Single();
     Check(controller.Recorded.SequenceEqual(new[] { -1 }), "verified successful application records offset");
+    Check(controller.MinimumOffset == AutoOcCpuLimits.MinimumOffset && controller.MinimumOffset == -50,
+        "controller constructor receives the shared original search bound");
     Check(AutoOcCpuPolicy.Epochs == 1, "zero baseline begins fresh controller epoch");
     Check(AutoOcCpuHardware.Current.Events.SequenceEqual(new[] { "read", "apply:-1" }), "baseline read precedes offset application");
     await session.StopAsync();
     Check(controller.Recorded.SequenceEqual(new[] { -1, 0 }), "verified stop restoration records zero");
     Check(controller.Stopped && controller.Disposed && InstabilityMonitor.Instances.Single().Disposed, "stop disposes controller and monitor");
+}
+
+foreach (int requested in new[] { -6, -50 })
+{
+    var session = Fresh(requested);
+    await session.TickAsync(true);
+    var controller = AdaptiveUndervoltController.Instances.Single();
+    Check(AutoOcCpuHardware.Current.Events.SequenceEqual(new[] { "read", "apply:" + requested }) && !Paused(),
+        requested + " controller request inside original range is passed to hardware");
+    Check(controller.Recorded.SequenceEqual(new[] { requested }), requested + " is recorded after fake verified application");
+    await session.StopAsync();
 }
 
 foreach (bool rollbackVerified in new[] { false, true })
@@ -115,7 +128,7 @@ foreach (string failure in new[] { "monitor", "whea", "persistence", "conflictin
     if (failure == "monitor") InstabilityMonitor.Instances.Single().PerformanceCountersAvailable = false;
     if (failure == "whea") InstabilityMonitor.Instances.Single().WheaWatcherActive = false;
     if (failure == "persistence") controller.PersistenceAvailable = false;
-    if (failure == "request_bounds") controller.Request = -6;
+    if (failure == "request_bounds") controller.Request = -51;
     if (failure is "conflicting_readback" or "failed_readback")
     {
         Age(session, "lastReadUtc");

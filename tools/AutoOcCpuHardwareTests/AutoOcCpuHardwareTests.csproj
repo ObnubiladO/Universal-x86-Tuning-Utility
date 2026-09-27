@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../Universal x86 Tuning Utility/Scripts/Misc/AutoOcCpuHardware.cs" Link="AutoOcCpuHardware.cs" />
+    <Compile Include="../../Universal x86 Tuning Utility/Scripts/Misc/AutoOcCpuLimits.cs" Link="AutoOcCpuLimits.cs" />
   </ItemGroup>
 </Project>
