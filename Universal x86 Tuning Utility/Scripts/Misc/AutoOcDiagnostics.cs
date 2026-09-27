@@ -107,6 +107,34 @@ public static class AutoOcDiagnostics
         catch { }
     }
 
+    // Firmware acceptance of a setter is distinct from reading the effective CO
+    // back from the CPU. Cached skips and initialization failures are not replies.
+    public static void RecordSmuCommand(string executionId, string commandName, uint[]? originalArguments,
+        string outcome, string? mailbox, uint? message, string? status, uint? statusCode,
+        bool acceptedByFirmware, Exception? exception = null)
+    {
+        try
+        {
+            Enqueue("smu_command_result", new()
+            {
+                ["executionId"] = executionId,
+                ["commandName"] = commandName,
+                ["originalArguments"] = originalArguments == null ? null : (uint[])originalArguments.Clone(),
+                ["outcome"] = outcome,
+                ["mailbox"] = mailbox,
+                ["message"] = message,
+                ["messageHex"] = message.HasValue ? $"0x{message.Value:X}" : null,
+                ["status"] = status,
+                ["statusCode"] = statusCode,
+                ["acceptedByFirmware"] = acceptedByFirmware,
+                ["hardwareReadbackVerified"] = false,
+                ["exceptionType"] = exception?.GetType().FullName,
+                ["exceptionHResult"] = exception?.HResult
+            });
+        }
+        catch { }
+    }
+
     public static void Shutdown()
     {
         try
@@ -175,6 +203,11 @@ public static class AutoOcDiagnostics
         var result = new Dictionary<string, object?>();
         foreach (string field in new[] { "lastCpuUsagePercent", "smoothedCpuUsagePercent", "cpuScore", "gpuScore", "requiredCpuAnomalies", "spikeMultiplier", "absoluteThreshold", "watchdogStallCount", "performanceCountersAvailable", "consecutiveCounterReadFailures", "eventWatcherErrorCount" })
             result[field] = Read(monitor, field);
+        // Mirror only the threshold adjustment, not the detector's score or verdict.
+        // These sampled fields can change concurrently; this is diagnostic context.
+        if (result["requiredCpuAnomalies"] is int baseThreshold && result["lastCpuUsagePercent"] is float usage)
+            result["effectiveCpuAnomalyThreshold"] = usage >= 85 ? Math.Max(6, baseThreshold - 1)
+                : usage >= 60 ? Math.Max(6, baseThreshold) : baseThreshold;
         var bits = new Dictionary<string, object?>();
         foreach (string field in new[] { "interruptSpikeBits", "contextSpikeBits", "transitionSpikeBits", "queueSpikeBits", "sysCallsSpikeBits", "pagesInSpikeBits", "pagesPerSecSpikeBits", "pageFaultsPerSecSpikeBits", "availDropBits", "interruptTimeSpikeBits", "dpcTimeSpikeBits", "dpcsQueuedSpikeBits", "exceptionDispatchesSpikeBits" })
         {

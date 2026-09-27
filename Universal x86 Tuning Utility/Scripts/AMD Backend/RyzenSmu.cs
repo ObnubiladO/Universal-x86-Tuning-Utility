@@ -649,32 +649,70 @@ namespace RyzenSmu
 
         private static bool Execute(string commandName, uint[] args)
         {
+            // Capture inputs before firmware can overwrite its argument buffer. Tracing
+            // is observational: no query, retry, or extra SMU command is issued.
+            var trace = CreateCurveOptimizerTrace(commandName, args);
             if (string.IsNullOrWhiteSpace(commandName) ||
                 !_commandIndex.TryGetValue(commandName, out (bool IsMp1, uint Address)[]? matchingCommands) ||
                 matchingCommands.Length == 0)
+            {
+                RecordCurveOptimizerResult(trace, commandName, "unmapped_command");
                 return false;
+            }
 
             bool cacheRejections = !cacheExemptCommands.Contains(commandName);
 
             if (cacheRejections && matchingCommands.All(target => rejectedPrereqTargets.ContainsKey(target)))
+            {
+                foreach (var target in matchingCommands)
+                    RecordCurveOptimizerResult(trace, commandName, "cached_prerequisite_rejection",
+                        UseHsmp ? "HSMP" : target.IsMp1 ? "MP1" : "RSMU", target.Address);
                 return false;
+            }
 
-            if (!RyzenAccess.EnsureInitialised())
+            bool initialized;
+            try { initialized = RyzenAccess.EnsureInitialised(); }
+            catch (Exception exception)
+            {
+                RecordCurveOptimizerResult(trace, commandName, "initialization_exception", exception: exception);
+                throw;
+            }
+            if (!initialized)
+            {
+                RecordCurveOptimizerResult(trace, commandName, "initialization_failed");
                 throw new InvalidOperationException("AMD PawnIO failed to initialise.");
+            }
 
             var originalArguments = (uint[])args.Clone();
             Status lastFailure = Status.UNKNOWN_CMD;
             foreach ((bool isMp1, uint address) in matchingCommands)
             {
                 if (cacheRejections && rejectedPrereqTargets.ContainsKey((isMp1, address)))
+                {
+                    RecordCurveOptimizerResult(trace, commandName, "cached_prerequisite_rejection",
+                        UseHsmp ? "HSMP" : isMp1 ? "MP1" : "RSMU", address);
                     continue;
+                }
 
                 Array.Copy(originalArguments, args, originalArguments.Length);
-                var status = UseHsmp
-                    ? RyzenAccess.SendHsmp(address, ref args)
-                    : isMp1
-                        ? RyzenAccess.SendMp1(address, ref args)
-                        : RyzenAccess.SendRsmu(address, ref args);
+                bool useHsmp = UseHsmp;
+                string mailbox = useHsmp ? "HSMP" : isMp1 ? "MP1" : "RSMU";
+                Status status;
+                try
+                {
+                    status = useHsmp
+                        ? RyzenAccess.SendHsmp(address, ref args)
+                        : isMp1
+                            ? RyzenAccess.SendMp1(address, ref args)
+                            : RyzenAccess.SendRsmu(address, ref args);
+                }
+                catch (Exception exception)
+                {
+                    RecordCurveOptimizerResult(trace, commandName, "send_exception", mailbox, address, exception: exception);
+                    throw;
+                }
+                // FAILED may also mean a transport/driver failure, not a firmware reply.
+                RecordCurveOptimizerResult(trace, commandName, "send_returned", mailbox, address, status);
                 if (status == Status.OK)
                     return true;
                 if (status == Status.CMD_REJECTED_PREREQ && cacheRejections && rejectedPrereqTargets.TryAdd((isMp1, address), 0))
@@ -687,6 +725,31 @@ namespace RyzenSmu
                 return false;
 
             throw new InvalidOperationException($"SMU command '{commandName}' failed with status {lastFailure}.");
+        }
+
+        private sealed record CurveOptimizerTrace(string Id, uint[]? Arguments);
+
+        private static CurveOptimizerTrace? CreateCurveOptimizerTrace(string commandName, uint[] args)
+        {
+            try
+            {
+                return commandName is "set-coall" or "set-coper" or "set-cogfx"
+                    ? new(Guid.NewGuid().ToString("N"), (uint[]?)args?.Clone()) : null;
+            }
+            catch { return null; }
+        }
+
+        private static void RecordCurveOptimizerResult(CurveOptimizerTrace? trace, string commandName,
+            string outcome, string? mailbox = null, uint? message = null, Status? status = null, Exception? exception = null)
+        {
+            if (trace == null) return;
+            try
+            {
+                AutoOcDiagnostics.RecordSmuCommand(trace.Id, commandName, trace.Arguments, outcome, mailbox,
+                    message, status?.ToString(), status.HasValue ? (uint)status.Value : null,
+                    status == Status.OK, exception);
+            }
+            catch { /* A diagnostic failure must not change command routing or its result. */ }
         }
     }
 

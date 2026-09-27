@@ -16,6 +16,10 @@ The tool preserves all original instructions and semantic operands, widens short
 
 The trace is `logs/autooc-diagnostics.jsonl` beside the portable executable. It records instability sources, scores, recent performance-counter samples, five-sample heuristic masks/counts, CPU load, controller offsets/holds, state changes, 30-second heartbeats and command dispatch attempts. **Dispatch records are not hardware acceptance/readback.** State is sampled without taking controller locks and is not a cross-thread atomic snapshot.
 
+CO setters also emit `smu_command_result` records from the existing command path. These retain the original arguments, execution identifier, mailbox, message and returned status, or distinguish initialization errors, unmapped commands and cached skips. `acceptedByFirmware` is true only for `Status.OK`. A `FAILED` status can include transport or mutex failure, so `send_returned` does not necessarily mean firmware replied. Every record retains `hardwareReadbackVerified=false`: a setter acknowledgement is not a separate getter result. These hooks issue no additional hardware commands and preserve routing, fallback and rejection caching. Run `tools/AutoOcSmuTests/run.ps1` for isolated tests of the actual command logic with scripted transport substitutes.
+
+Monitor snapshots include `effectiveCpuAnomalyThreshold` as well as the configured `requiredCpuAnomalies`. The original detector lowers its threshold by one at CPU usage of at least 85 percent; the diagnostic value reflects that existing rule without changing it.
+
 Records go through a bounded, non-blocking queue to a background writer. The log rotates at 8 MiB and retains one previous file; queue drops and write failures are counted in subsequent records. I/O failures must not change signaling or tuning. The logger does not consume instability flags. An abrupt process termination can lose queued records. The reason for historical signals cannot be recovered retroactively.
 
 To validate the actual patched signal methods without starting hardware monitoring:
