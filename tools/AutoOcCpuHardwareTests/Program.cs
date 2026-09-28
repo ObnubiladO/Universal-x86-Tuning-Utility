@@ -40,6 +40,39 @@ foreach (int requested in new[] { -6, -50 })
 }
 Check(AutoOcCpuLimits.MinimumOffset == -50, "hardware tests use the production original search bound");
 
+foreach (string cause in new[] { "mutex_timeout", "firmware_response", "driver_io", "inconsistent_ok" })
+{
+    var backend = new FakeBackend { Scenario = "transport_" + cause };
+    var applied = await Service(backend).ApplyAsync(-50);
+    Check(!applied.Success && applied.Rollback?.Success == true, cause + " retains verified-zero rollback");
+    Check(applied.Readback!.Cores.Count == 4 && applied.Readback.Cores[3].Offset is null,
+        cause + " never interprets failed or inconsistent transport arguments as an offset");
+    Check(backend.Events.Where(e => e.StartsWith("set:")).SequenceEqual(new[] { "set:-50", "set:0" }),
+        cause + " does not retry setters");
+    Check(backend.Events.Count(e => e == "read:requested:3145728") == 1,
+        cause + " is not blindly retried by hardware service");
+    var captured = applied.Readback.Cores[3].Transport!;
+    Check(captured.FailureKind == (cause == "inconsistent_ok" ? "driver_io" : cause), cause + " diagnostic preserved");
+    if (cause == "mutex_timeout")
+    {
+        Check(applied.Error!.Contains("busy after 3 lock attempts") && applied.Error.Contains("No offset query was sent"),
+            "mutex exhaustion does not masquerade as a firmware rejection");
+        Check(captured.MutexAttempts == 3 && !captured.CommandMayHaveBeenSent, "exhaustion includes attempts and command state");
+    }
+    if (cause == "firmware_response")
+        Check(applied.Error!.Contains("firmware returned FAILED (0xFF)"), "actual firmware rejection is labeled separately");
+}
+
+var recoveredBackend = new FakeBackend { Scenario = "transport_recovered" };
+var recovered = await Service(recoveredBackend).ApplyAsync(-50);
+Check(recovered.Success && recovered.Readback!.Matches(-50), "recovered lock contention remains applied after full verification");
+Check(recovered.Readback!.Cores[3].Transport is { FailureKind: "none", MutexAttempts: 2 },
+    "successful lock retry remains visible in core diagnostics");
+Check(recoveredBackend.Events.Count(e => e.StartsWith("set:")) == 1 && recoveredBackend.Events.Count(e => e.StartsWith("read:")) == 16,
+    "recovered lock contention does not duplicate setters or per-core backend calls");
+Check(System.Text.Json.JsonSerializer.Serialize(recovered.Readback).Contains("\"MutexAttempts\":2"),
+    "readback logging retains recovered retry details");
+
 foreach (string scenario in new[] { "set_false", "set_throws", "read_failed", "read_throws", "read_mismatch", "malformed", "implausible" })
 {
     var backend = new FakeBackend { Scenario = scenario };
@@ -109,6 +142,22 @@ internal sealed class FakeBackend : IAutoOcCpuHardwareBackend
         Events.Add("read:" + (restored ? "restored:" : "requested:") + selector);
         if (!restored && Offset < 0)
         {
+            if (Scenario.StartsWith("transport_") && selector == 0x00300000)
+            {
+                string cause = Scenario.Substring("transport_".Length);
+                bool recovered = cause == "recovered";
+                bool lockTimeout = cause == "mutex_timeout";
+                var diagnostic = new RyzenSmu.RyzenSMU.CommandDiagnostics(
+                    recovered ? "none" : cause == "inconsistent_ok" ? "driver_io" : cause,
+                    lockTimeout ? "mutex_acquire" : "response", !lockTimeout,
+                    lockTimeout ? 3 : recovered ? 2 : 1, lockTimeout ? 300 : recovered ? 130 : 0,
+                    301, lockTimeout ? null : cause == "firmware_response" ? 255u : 1u,
+                    cause is "driver_io" or "inconsistent_ok" ? unchecked((int)0x80070006) : null,
+                    null, null);
+                return new(recovered || cause == "inconsistent_ok" ? 1u : 255u,
+                    recovered || cause == "inconsistent_ok" ? "OK" : "FAILED",
+                    new uint[] { unchecked((uint)Offset), 0, 0, 0, 0, 0 }, diagnostic);
+            }
             if (Scenario == "read_throws") throw new Exception("getter failed");
             if (Scenario == "read_failed") return new(0xFD, "CMD_REJECTED_PREREQ", new uint[6]);
             if (Scenario == "malformed") return new(1, "OK", new uint[2]);

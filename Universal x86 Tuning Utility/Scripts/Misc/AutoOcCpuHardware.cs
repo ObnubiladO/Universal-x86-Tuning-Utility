@@ -15,7 +15,8 @@ internal sealed record AutoOcCpuSupport(bool Supported, string Reason, string Cp
 
 internal sealed record AutoOcCpuCoreReadback(int Core, int Ccd, int CoreWithinCcd,
     uint Selector, DateTime StartedUtc, DateTime CompletedUtc, uint? StatusCode,
-    string? Status, uint[] RawArguments, int? Offset, string? Error);
+    string? Status, uint[] RawArguments, int? Offset, string? Error,
+    RyzenSMU.CommandDiagnostics? Transport = null);
 
 internal sealed record AutoOcCpuReadback(bool Success, string? Error, DateTime StartedUtc,
     DateTime CompletedUtc, IReadOnlyList<AutoOcCpuCoreReadback> Cores)
@@ -36,7 +37,8 @@ internal sealed record AutoOcCpuApplyResult(int RequestedOffset, bool CommandAcc
     public bool Success => CommandAccepted && ReadbackVerified && Error is null && Rollback is null;
 }
 
-internal sealed record AutoOcCpuSmuReply(uint StatusCode, string Status, uint[] Arguments);
+internal sealed record AutoOcCpuSmuReply(uint StatusCode, string Status, uint[] Arguments,
+    RyzenSMU.CommandDiagnostics? Transport = null);
 
 internal interface IAutoOcCpuHardwareBackend
 {
@@ -148,13 +150,16 @@ internal sealed class AutoOcCpuHardware
             string? status = null, error = null;
             uint[] raw = Array.Empty<uint>();
             int? offset = null;
+            RyzenSMU.CommandDiagnostics? transport = null;
             try
             {
                 var reply = backend.ReadCoreOffset(selector);
                 statusCode = reply.StatusCode;
                 status = reply.Status;
+                transport = reply.Transport;
                 raw = reply.Arguments?.ToArray() ?? Array.Empty<uint>();
-                if (statusCode != 1) error = "The firmware offset query was rejected or failed.";
+                if (statusCode != 1 || (transport is not null && transport.FailureKind != "none"))
+                    error = DescribeReadFailure(reply);
                 else if (raw.Length != 6) error = "The offset query returned a malformed argument buffer.";
                 else
                 {
@@ -165,11 +170,22 @@ internal sealed class AutoOcCpuHardware
             }
             catch (Exception exception) { error = exception.ToString(); }
             cores.Add(new(core, core / 8, core % 8, selector, coreStarted, DateTime.UtcNow,
-                statusCode, status, raw, offset, error));
+                statusCode, status, raw, offset, error, transport));
             if (error is not null)
                 return new(false, $"Core {core}: {error}", started, DateTime.UtcNow, cores.AsReadOnly());
         }
         return new(true, null, started, DateTime.UtcNow, cores.AsReadOnly());
+    }
+
+    private static string DescribeReadFailure(AutoOcCpuSmuReply reply)
+    {
+        var transport = reply.Transport;
+        if (transport is null) return "The CPU offset query failed; the transport cause is unavailable.";
+        if (transport.FailureKind == "mutex_timeout" && !transport.CommandMayHaveBeenSent)
+            return $"CPU hardware access remained busy after {transport.MutexAttempts} lock attempts. No offset query was sent.";
+        if (transport.FailureKind == "firmware_response")
+            return $"The CPU firmware returned {reply.Status} (0x{reply.StatusCode:X}) for the offset query.";
+        return $"The CPU offset query failed during {transport.Phase} ({transport.FailureKind}).";
     }
 
     private AutoOcCpuApplyResult UnsupportedApply(int offset) => new(offset, false, false, null, Support.Reason, null);
@@ -227,8 +243,10 @@ internal sealed class AutoOcCpuHardware
             // Only two CCDs, eight cores each; no margin/payload bits on getter requests.
             if ((selector & ~0x10700000u) != 0) throw new ArgumentOutOfRangeException(nameof(selector));
             uint[] args = { selector, 0, 0, 0, 0, 0 };
-            var status = SMUCommands.RyzenAccess.SendRsmu(0xD5, ref args);
-            return new((uint)status, status.ToString(), args);
+            // Retry only acquisition of the shared lock, before any register access.
+            // A firmware rejection, driver failure or mismatch still fails closed.
+            var result = SMUCommands.RyzenAccess.SendRsmuDetailed(0xD5, ref args, retryMutexTimeout: true);
+            return new((uint)result.Status, result.Status.ToString(), args, result.Diagnostics);
         }
 
         public void ResetRejectedCommands() => SMUCommands.ResetRejectedPrereqCommands();

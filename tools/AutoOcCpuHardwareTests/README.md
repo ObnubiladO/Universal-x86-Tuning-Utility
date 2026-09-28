@@ -10,7 +10,7 @@ From the repository root, using a .NET 10 SDK:
 dotnet run --project tools/AutoOcCpuHardwareTests/AutoOcCpuHardwareTests.csproj -c Release
 ```
 
-No elevation, installed UXTU copy, or AMD CPU is required. A failed assertion produces a nonzero exit code. The current harness contains 63 assertions.
+No elevation, installed UXTU copy, or AMD CPU is required. A failed assertion produces a nonzero exit code. The current harness contains 90 assertions.
 
 ## Coverage
 
@@ -18,6 +18,8 @@ No elevation, installed UXTU copy, or AMD CPU is required. A failed assertion pr
 - Fake applications at -6 and -50 require matching signed readback. The test project links the production `AutoOcCpuLimits.cs` rather than copying its bound.
 - Acknowledgement alone is insufficient: success requires matching readback from all 16 distinct core selectors.
 - Signed offsets and raw rejected status values are retained.
+- Per-call transport diagnostics distinguish lock exhaustion, firmware replies and driver failures. Non-success diagnostics fail closed even if paired with an inconsistent OK status.
+- Recovered lock acquisition keeps its attempt count in the serialized readback and requires all 16 matching offsets; persistent failures restore zero without repeating setters or retrying ambiguous queries.
 - Rejected or throwing setters, failed/malformed/implausible queries, and mismatched readback restore zero before returning failure.
 - Restoration clears the rejection cache, still runs if clearing fails, and reads back even if the restore setter rejects or throws.
 - Explicit restoration verifies zero, and concurrent operations across service instances remain serialized.

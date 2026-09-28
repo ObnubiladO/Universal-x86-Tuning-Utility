@@ -11,6 +11,15 @@ namespace Universal_x86_Tuning_Utility.Scripts
 }
 namespace RyzenSmu
 {
+    internal sealed class RyzenSMU
+    {
+        internal enum Status : byte { OK = 1, FAILED = 255 }
+        internal sealed record CommandDiagnostics(string FailureKind, string Phase,
+            bool CommandMayHaveBeenSent, int MutexAttempts, double MutexWaitMilliseconds,
+            double ElapsedMilliseconds, uint? FirmwareResponse, int? NativeErrorCode,
+            uint? FailedRegister, string? ExceptionType);
+        internal sealed record CommandResult(Status Status, CommandDiagnostics Diagnostics);
+    }
     internal static class SMUCommands
     {
         internal static bool UseHsmp => throw new InvalidOperationException("Production backend prohibited in tests.");
@@ -23,6 +32,7 @@ namespace RyzenSmu
         internal static uint PSMU_ADDR_MSG => throw new InvalidOperationException("Production backend prohibited in tests.");
         internal static uint PSMU_ADDR_RSP => throw new InvalidOperationException("Production backend prohibited in tests.");
         internal static uint PSMU_ADDR_ARG => throw new InvalidOperationException("Production backend prohibited in tests.");
-        internal uint SendRsmu(uint command, ref uint[] arguments) => throw new InvalidOperationException("Production backend prohibited in tests.");
+        internal RyzenSMU.CommandResult SendRsmuDetailed(uint command, ref uint[] arguments, bool retryMutexTimeout = false)
+            => throw new InvalidOperationException("Production backend prohibited in tests.");
     }
 }

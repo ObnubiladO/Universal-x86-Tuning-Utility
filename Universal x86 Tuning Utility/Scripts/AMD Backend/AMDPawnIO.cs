@@ -309,7 +309,7 @@ namespace Universal_x86_Tuning_Utility.Scripts.AMD_Backend
             OPEN_EXISTING = 3
         }
 
-        [DllImport("kernel32.dll", CallingConvention = CallingConvention.Winapi)]
+        [DllImport("kernel32.dll", CallingConvention = CallingConvention.Winapi, SetLastError = true)]
         private static extern bool DeviceIoControl(
             SafeFileHandle device,
             ControlCode ioControlCode,

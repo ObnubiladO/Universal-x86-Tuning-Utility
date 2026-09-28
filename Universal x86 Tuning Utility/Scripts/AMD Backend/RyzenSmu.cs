@@ -2,6 +2,7 @@
 using System.CodeDom;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -850,6 +851,24 @@ namespace RyzenSmu
             return ryzenSMU.SendSmuCommand(rsmuMailbox, message, ref arguments);
         }
 
+        public CommandResult SendRsmuDetailed(uint message, ref uint[] arguments, bool retryMutexTimeout = false)
+        {
+            var elapsed = Stopwatch.StartNew();
+            try
+            {
+                if (!EnsureInitialised() || ryzenSMU == null || rsmuMailbox == null)
+                    return new(Status.FAILED, new("transport_unavailable", "initialization", false, 0, 0,
+                        elapsed.Elapsed.TotalMilliseconds));
+
+                return ryzenSMU.SendSmuCommandDetailed(rsmuMailbox, message, ref arguments, retryMutexTimeout);
+            }
+            catch (Exception ex)
+            {
+                return new(Status.FAILED, new("exception", "initialization", false, 0, 0,
+                    elapsed.Elapsed.TotalMilliseconds, ExceptionType: ex.GetType().FullName));
+            }
+        }
+
         public Status SendHsmp(uint message, ref uint[] arguments)
         {
             if (!EnsureInitialised() || ryzenSMU == null || hsmpMailbox == null)
@@ -877,6 +896,7 @@ namespace RyzenSmu
         private const string PCI_MUTEX_NAME = "Global\\Access_PCI";
 
         private readonly AMDPawnIo _pawnIo;
+        private readonly Func<string, Mutex?> _mutexFactory;
 
         // Mutex handles owned by this instance
         private Mutex? _isaMutex;
@@ -927,9 +947,39 @@ namespace RyzenSmu
         public uint LastCommand { get; private set; }
         public Status LastStatus { get; private set; } = Status.FAILED;
 
-        public RyzenSMU(AMDPawnIo pawnIo)
+        public RyzenSMU(AMDPawnIo pawnIo) : this(pawnIo, CreateOrOpenMutex) { }
+
+        internal RyzenSMU(AMDPawnIo pawnIo, Func<string, Mutex?> mutexFactory)
         {
             _pawnIo = pawnIo ?? throw new ArgumentNullException(nameof(pawnIo));
+            _mutexFactory = mutexFactory ?? throw new ArgumentNullException(nameof(mutexFactory));
+        }
+
+        // Returned per invocation; callers must not infer failure causes from the shared LastStatus metadata.
+        // NativeErrorCode is the HRESULT returned by PawnIO, not a firmware response.
+        public sealed record CommandDiagnostics(string FailureKind, string Phase, bool CommandMayHaveBeenSent,
+            int MutexAttempts, double MutexWaitMilliseconds, double ElapsedMilliseconds,
+            uint? FirmwareResponse = null, int? NativeErrorCode = null, uint? FailedRegister = null,
+            string? ExceptionType = null);
+
+        public sealed record CommandResult(Status Status, CommandDiagnostics Diagnostics);
+
+        private sealed class CommandTrace
+        {
+            public readonly Stopwatch Elapsed = Stopwatch.StartNew();
+            public string FailureKind = "none";
+            public string Phase = "validation";
+            public bool CommandMayHaveBeenSent;
+            public int MutexAttempts;
+            public double MutexWaitMilliseconds;
+            public uint? FirmwareResponse;
+            public int? NativeErrorCode;
+            public uint? FailedRegister;
+            public string? ExceptionType;
+
+            public CommandResult Result(Status status) => new(status, new(FailureKind, Phase,
+                CommandMayHaveBeenSent, MutexAttempts, MutexWaitMilliseconds, Elapsed.Elapsed.TotalMilliseconds,
+                FirmwareResponse, NativeErrorCode, FailedRegister, ExceptionType));
         }
 
         /// <summary>
@@ -957,8 +1007,8 @@ namespace RyzenSmu
         {
             ThrowIfDisposed();
 
-            _isaMutex ??= CreateOrOpenMutex(ISA_MUTEX_NAME);
-            _pciMutex ??= CreateOrOpenMutex(PCI_MUTEX_NAME);
+            _isaMutex ??= _mutexFactory(ISA_MUTEX_NAME);
+            _pciMutex ??= _mutexFactory(PCI_MUTEX_NAME);
         }
 
         /// <summary>
@@ -1016,37 +1066,96 @@ namespace RyzenSmu
         public Status SendSmuCommand(Mailbox mailbox, uint message, ref uint[] args)
         {
             ThrowIfDisposed();
+            return SendSmuCommandDetailed(mailbox, message, ref args).Status;
+        }
 
-            if (mailbox == null || !mailbox.IsValid || message == 0)
-            {
-                RememberDebug(mailbox, message, Status.UNKNOWN_CMD);
-                return Status.UNKNOWN_CMD;
-            }
-
-            // Lazily open mutexes if the caller forgot
-            if (_pciMutex == null)
-                Open();
-
-            if (_pciMutex == null || !WaitForMutex(_pciMutex, 10))
-            {
-                RememberDebug(mailbox, message, Status.FAILED);
-                return Status.FAILED;
-            }
+        /// <summary>
+        /// Optionally retries only mutex acquisition timeouts, before any mailbox I/O.
+        /// A command is never resent, even when its response or driver operation fails.
+        /// </summary>
+        public CommandResult SendSmuCommandDetailed(Mailbox mailbox, uint message, ref uint[] args,
+            bool retryMutexTimeout = false)
+        {
+            var trace = new CommandTrace();
+            Mutex? acquiredMutex = null;
+            Status status = Status.FAILED;
 
             try
             {
-                var status = ExecuteMailboxFlow(mailbox, message, ref args);
-                RememberDebug(mailbox, message, status);
-                return status;
+                ThrowIfDisposed();
+                if (mailbox == null || !mailbox.IsValid || message == 0)
+                {
+                    trace.FailureKind = "invalid_request";
+                    status = Status.UNKNOWN_CMD;
+                    return trace.Result(status);
+                }
+
+                trace.Phase = "mutex_open";
+                if (_pciMutex == null)
+                    Open();
+                // Capture the handle for the entire invocation, including its release.
+                Mutex? mutex = _pciMutex;
+                if (mutex == null)
+                {
+                    trace.FailureKind = "mutex_unavailable";
+                    return trace.Result(status);
+                }
+
+                trace.Phase = "mutex_wait";
+                int maxAttempts = retryMutexTimeout ? 3 : 1;
+                int timeoutMs = retryMutexTimeout ? 100 : 10;
+                for (int attempt = 0; attempt < maxAttempts; attempt++)
+                {
+                    trace.MutexAttempts++;
+                    var wait = Stopwatch.StartNew();
+                    bool acquired;
+                    try
+                    {
+                        acquired = mutex.WaitOne(timeoutMs, false);
+                    }
+                    catch (AbandonedMutexException)
+                    {
+                        // Windows transfers ownership to this thread on abandonment.
+                        acquired = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        trace.FailureKind = "mutex_error";
+                        trace.ExceptionType = ex.GetType().FullName;
+                        acquired = false;
+                    }
+                    finally
+                    {
+                        trace.MutexWaitMilliseconds += wait.Elapsed.TotalMilliseconds;
+                    }
+                    if (trace.FailureKind == "mutex_error")
+                        return trace.Result(status);
+                    if (!acquired)
+                        continue;
+                    acquiredMutex = mutex;
+                    break;
+                }
+
+                if (acquiredMutex == null)
+                {
+                    trace.FailureKind = "mutex_timeout";
+                    return trace.Result(status);
+                }
+
+                status = ExecuteMailboxFlow(mailbox, message, ref args, trace);
+                return trace.Result(status);
             }
-            catch
+            catch (Exception ex)
             {
-                RememberDebug(mailbox, message, Status.FAILED);
-                return Status.FAILED;
+                trace.FailureKind = trace.Phase == "mutex_open" ? "mutex_error" : "exception";
+                trace.ExceptionType = ex.GetType().FullName;
+                return trace.Result(Status.FAILED);
             }
             finally
             {
-                SafeReleaseMutex(_pciMutex);
+                if (acquiredMutex != null)
+                    SafeReleaseMutex(acquiredMutex);
+                RememberDebug(mailbox, message, status);
             }
         }
 
@@ -1054,58 +1163,80 @@ namespace RyzenSmu
         // Core mailbox protocol
         // --------------------------------------------------------------------
 
-        private Status ExecuteMailboxFlow(Mailbox mb, uint msg, ref uint[] args)
+        private Status ExecuteMailboxFlow(Mailbox mb, uint msg, ref uint[] args, CommandTrace trace)
         {
             // Ensure the mailbox is idle before starting
-            if (!WaitForResponse(mb.SMU_ADDR_RSP, out _))
+            trace.Phase = "mailbox_ready";
+            if (!WaitForResponse(mb.SMU_ADDR_RSP, out _, trace))
                 return Status.FAILED;
 
             // Clear response register
-            if (!Write32(mb.SMU_ADDR_RSP, 0))
+            trace.Phase = "response_clear";
+            if (!Write32(mb.SMU_ADDR_RSP, 0, trace))
                 return Status.FAILED;
 
             // Write input arguments
-            if (!WriteArguments(mb, args))
+            trace.Phase = "arguments_write";
+            if (!WriteArguments(mb, args, trace))
                 return Status.FAILED;
 
-            // Send command
-            if (!Write32(mb.SMU_ADDR_MSG, msg))
+            // A failed or throwing native write may still have reached the device.
+            trace.Phase = "command_write";
+            trace.CommandMayHaveBeenSent = true;
+            if (!Write32(mb.SMU_ADDR_MSG, msg, trace))
                 return Status.FAILED;
 
             // Wait for completion
-            if (!WaitForResponse(mb.SMU_ADDR_RSP, out uint rsp))
+            trace.Phase = "completion_wait";
+            if (!WaitForResponse(mb.SMU_ADDR_RSP, out uint rsp, trace))
                 return Status.FAILED;
+            trace.FirmwareResponse = rsp;
 
             // The response register should contain a byte-sized status code
             if (rsp > byte.MaxValue)
+            {
+                trace.FailureKind = "malformed_response";
+                trace.FailedRegister = mb.SMU_ADDR_RSP;
                 return Status.FAILED;
+            }
 
             Status status = unchecked((Status)rsp);
+            if (status != Status.OK)
+            {
+                trace.FailureKind = "firmware_response";
+                return status;
+            }
 
             // Read back arguments only on success
-            if (status == Status.OK && args != null && args.Length > 0)
+            if (args != null && args.Length > 0)
             {
-                if (!ReadArguments(mb, ref args))
+                trace.Phase = "arguments_read";
+                if (!ReadArguments(mb, ref args, trace))
                     return Status.FAILED;
             }
 
+            trace.Phase = "complete";
             return status;
         }
 
-        private bool WaitForResponse(uint rspReg, out uint value)
+        private bool WaitForResponse(uint rspReg, out uint value, CommandTrace trace)
         {
             value = 0;
 
             for (ushort i = 0; i < POLL_LIMIT; i++)
             {
-                if (Read32(rspReg, out value) && value != 0)
+                if (!Read32(rspReg, out value, trace))
+                    return false;
+                if (value != 0)
                     return true;
             }
 
+            trace.FailureKind = "polling_timeout";
+            trace.FailedRegister = rspReg;
             return false;
         }
 
-        private bool WriteArguments(Mailbox mb, uint[] args)
+        private bool WriteArguments(Mailbox mb, uint[] args, CommandTrace trace)
         {
             uint[] payload = PrepareArguments(args, mb.MAX_ARGS);
 
@@ -1118,14 +1249,14 @@ namespace RyzenSmu
                 if (reg > maxSafe)
                     continue;
 
-                if (!Write32(reg, payload[i]))
+                if (!Write32(reg, payload[i], trace))
                     return false;
             }
 
             return true;
         }
 
-        private bool ReadArguments(Mailbox mb, ref uint[] args)
+        private bool ReadArguments(Mailbox mb, ref uint[] args, CommandTrace trace)
         {
             int count = Math.Min(args.Length, (int)mb.MAX_ARGS);
 
@@ -1138,7 +1269,7 @@ namespace RyzenSmu
                 if (reg > maxSafe)
                     continue;
 
-                if (!Read32(reg, out uint value))
+                if (!Read32(reg, out uint value, trace))
                     return false;
 
                 args[i] = value;
@@ -1151,25 +1282,37 @@ namespace RyzenSmu
         // Low-level register access
         // --------------------------------------------------------------------
 
-        private bool Read32(uint reg, out uint value)
+        private bool Read32(uint reg, out uint value, CommandTrace trace)
         {
             value = 0;
 
             long[] inBuf = { unchecked((long)reg) };
             long[] outBuf = new long[1];
 
-            int hr = _pawnIo.ExecuteHr(IOCTL_READ_SMU_REGISTER, inBuf, 1, outBuf, 1, out _);
+            trace.FailedRegister = reg;
+            int hr = _pawnIo.ExecuteHr(IOCTL_READ_SMU_REGISTER, inBuf, 1, outBuf, 1, out uint returned);
             if (hr != 0)
+            {
+                trace.FailureKind = "driver_io";
+                trace.NativeErrorCode = hr;
                 return false;
+            }
+            if (returned != 1)
+            {
+                trace.FailureKind = "malformed_response";
+                return false;
+            }
 
             value = unchecked((uint)outBuf[0]);
+            trace.FailedRegister = null;
             return true;
         }
 
-        private bool Write32(uint reg, uint value)
+        private bool Write32(uint reg, uint value, CommandTrace trace)
         {
             long[] inBuf = { unchecked((long)reg), unchecked((long)value) };
 
+            trace.FailedRegister = reg;
             int hr = _pawnIo.ExecuteHr(
                 IOCTL_WRITE_SMU_REGISTER,
                 inBuf,
@@ -1178,7 +1321,14 @@ namespace RyzenSmu
                 0,
                 out _);
 
-            return hr == 0;
+            if (hr != 0)
+            {
+                trace.FailureKind = "driver_io";
+                trace.NativeErrorCode = hr;
+                return false;
+            }
+            trace.FailedRegister = null;
+            return true;
         }
 
         private static uint[] PrepareArguments(uint[] args, uint maxArgs)
@@ -1232,13 +1382,6 @@ namespace RyzenSmu
             var security = new MutexSecurity();
             security.AddAccessRule(rule);
             return security;
-        }
-
-        private static bool WaitForMutex(Mutex mutex, int timeoutMs)
-        {
-            try { return mutex.WaitOne(timeoutMs, false); }
-            catch (AbandonedMutexException) { return true; }
-            catch { return false; }
         }
 
         private static void SafeReleaseMutex(Mutex mutex)

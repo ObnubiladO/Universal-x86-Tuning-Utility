@@ -92,6 +92,20 @@ cannot be verified, it reports that failure and preserves unclean-recovery
 state rather than declaring a clean shutdown. Abrupt termination cannot
 guarantee that an exit-time restoration runs.
 
+CPU readback allows up to three 100 ms attempts to acquire the shared PCI
+mutex before any register access. Only an acquisition timeout is retried.
+Mutex errors, firmware responses, driver errors and mismatched offsets retain
+the failure/rollback behavior above; no voltage-setting command is retried.
+Other command callers retain the legacy single 10 ms mutex wait. Scheduling
+can extend the elapsed wall time beyond the nominal 300 ms wait budget.
+
+Each core readback includes per-call `Transport` diagnostics: failure kind and
+phase, mutex attempt/wait counts, whether a command may have been sent, raw
+firmware response and native IO failure details where available. A recovered
+lock wait remains visible in successful readbacks. These fields distinguish
+transport failures from an actual firmware rejection; they do not identify
+the process holding the lock or establish undervolt stability.
+
 Only workload-counter CPU signals become observations. WHEA, exception,
 watchdog and other original hard-error signaling and controller backoff
 remain in place, with the corrected WHEA provider query above. These checks
